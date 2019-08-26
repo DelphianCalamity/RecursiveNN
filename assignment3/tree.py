@@ -33,6 +33,7 @@ class Tree:
         tokens = []
         self.open = '('
         self.close = ')'
+        self.max_depth = 0
         for toks in treeString.strip().split():
             tokens += list(toks)
         self.root = self.parse(tokens)
@@ -40,7 +41,8 @@ class Tree:
         self.labels = get_labels(self.root)
         self.num_words = len(self.labels)
 
-    def parse(self, tokens, parent=None):
+
+    def parse(self, tokens, parent=None, i=0):
         assert tokens[0] == self.open, "Malformed tree"
         assert tokens[-1] == self.close, "Malformed tree"
 
@@ -67,10 +69,12 @@ class Tree:
         if countOpen == 0:
             node.word = ''.join(tokens[2:-1]).lower()  # lower case?
             node.isLeaf = True
+            if i > self.max_depth:
+                self.max_depth = i
             return node
 
-        node.left = self.parse(tokens[2:split], parent=node)
-        node.right = self.parse(tokens[split:-1], parent=node)
+        node.left = self.parse(tokens[2:split], parent=node, i=i+1)
+        node.right = self.parse(tokens[split:-1], parent=node, i=i+1)
 
         return node
 
@@ -83,7 +87,7 @@ class Tree:
 def leftTraverse(node, nodeFn=None, args=None):
     """
     Recursive function traverses tree
-    from left to right. 
+    from left to right.
     Calls nodeFn at each node
     """
     if node is None:
@@ -91,6 +95,14 @@ def leftTraverse(node, nodeFn=None, args=None):
     leftTraverse(node.left, nodeFn, args)
     leftTraverse(node.right, nodeFn, args)
     nodeFn(node, args)
+
+def traverse(node, nodeFn=None, args=None):
+    if node is None:
+        return
+
+    nodeFn(node, args)
+    traverse(node.left, nodeFn, (args[0], args[1]*2))
+    traverse(node.right, nodeFn, (args[0], args[1]*2+1))
 
 
 def getLeaves(node):
@@ -117,7 +129,7 @@ def loadTrees(dataSet='train'):
     Loads training trees. Maps leaf node words to word ids.
     """
     file = 'trees/%s.txt' % dataSet
-    print "Loading %s trees.." % dataSet
+    print("Loading %s trees.." % dataSet)
     with open(file, 'r') as fid:
         trees = [Tree(l) for l in fid.readlines()]
 
@@ -127,7 +139,7 @@ def simplified_data(num_train, num_dev, num_test):
     rndstate = random.getstate()
     random.seed(0)
     trees = loadTrees('train') + loadTrees('dev') + loadTrees('test')
-    
+
     #filter extreme trees
     pos_trees = [t for t in trees if t.root.label==4]
     neg_trees = [t for t in trees if t.root.label==0]
@@ -135,14 +147,14 @@ def simplified_data(num_train, num_dev, num_test):
     #binarize labels
     binarize_labels(pos_trees)
     binarize_labels(neg_trees)
-    
+
     #split into train, dev, test
-    print len(pos_trees), len(neg_trees)
+    print(len(pos_trees), len(neg_trees))
     pos_trees = sorted(pos_trees, key=lambda t: len(t.get_words()))
     neg_trees = sorted(neg_trees, key=lambda t: len(t.get_words()))
-    num_train/=2
-    num_dev/=2
-    num_test/=2
+    num_train//=2
+    num_dev//=2
+    num_test//=2
     train = pos_trees[:num_train] + neg_trees[:num_train]
     dev = pos_trees[num_train : num_train+num_dev] + neg_trees[num_train : num_train+num_dev]
     test = pos_trees[num_train+num_dev : num_train+num_dev+num_test] + neg_trees[num_train+num_dev : num_train+num_dev+num_test]
