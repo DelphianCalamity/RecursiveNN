@@ -8,6 +8,8 @@ import random
 from collections import OrderedDict, defaultdict
 
 from tensorflow.python.framework import function
+from tensorflow.python.ops import gradients_impl
+
 import numpy as np
 import matplotlib.pyplot as plt
 import tensorflow as tf
@@ -51,7 +53,7 @@ class RecursiveNetStaticGraph():
 
         # add input placeholders
         self.is_leaf_placeholder = tf.placeholder(
-            tf.bool, (None), name='is_leaf_placeholder')
+            tf.int32, (None), name='is_leaf_placeholder')
         self.node_word_indices_placeholder = tf.placeholder(
             tf.int32, (None), name='node_word_indices_placeholder')
         self.labels_placeholder = tf.placeholder(
@@ -62,26 +64,28 @@ class RecursiveNetStaticGraph():
         # add model variables
         # making initialization deterministic for now
         with tf.variable_scope('Embeddings'):
-            embeddings = tf.get_variable('embeddings',
+            self.embeddings = tf.get_variable('embeddings',
                                          [len(self.vocab),
                                           self.config.embed_size],
-                                         initializer=tf.constant_initializer(0.0))
+                                         initializer=tf.constant_initializer(2.0))
 
         with tf.variable_scope('Composition'):
             W1 = tf.get_variable('W1',
                                  [2 * self.config.embed_size,
                                      self.config.embed_size],
                                  initializer=tf.constant_initializer(0.0))
-            b1 = tf.get_variable('b1', [1, self.config.embed_size])
+            b1 = tf.get_variable('b1', [1, self.config.embed_size],
+                                 initializer=tf.constant_initializer(0.0))
 
         with tf.variable_scope('Projection'):
             U = tf.get_variable('U',
                                 [self.config.embed_size,
                                  self.config.label_size],
                                 initializer=tf.constant_initializer(0.0))
-            bs = tf.get_variable('bs', [1, self.config.label_size])
+            bs = tf.get_variable('bs', [1, self.config.label_size], 
+                                initializer=tf.constant_initializer(0.0))
 
-        # build recursive graph
+        # Build recursive graph
         def embed_word(word_index, embeddings):
             # with tf.device('/cpu:0'):
             return tf.expand_dims(tf.gather(embeddings, word_index), 0)
@@ -90,39 +94,35 @@ class RecursiveNetStaticGraph():
             return tf.nn.relu(tf.matmul(tf.concat([left_tensor, right_tensor], 1), W) + b)
 
         # Function Declaration
-        rec = function.Declare("Rec", [("i", tf.int32), ("is_leaf", tf.bool),
-                                       ("node_word_indices",
-                                        tf.int32), ("embeddings", tf.float32),
-                                       ("W", tf.float32), ("b", tf.float32)], [("ret", tf.float32)])
+        rec = function.Declare("Rec", [("i", tf.int32), ("is_leaf", tf.int32), 
+            ("node_word_indices", tf.int32), ("embeddings", tf.float32), ("W", tf.float32),("b", tf.float32)], 
+            [("ret", tf.float32)])
 
-       # Function Definition
-        @function.Defun(tf.int32, tf.bool, tf.int32, tf.float32, tf.float32, tf.float32, func_name="Rec", out_names=["ret"])
+        # Function Definition
+        @function.Defun(tf.int32, tf.int32, tf.int32, tf.float32, tf.float32, tf.float32, func_name="Rec", grad_func="GradFac", create_grad_func=True, out_names=["ret"])
         def RecImpl(i, is_leaf, node_word_indices, embeddings, W, b):
-
             node_word_index = tf.gather(node_word_indices, i)
             node_tensor = \
-                tf.cond(tf.equal(tf.gather(is_leaf, i), tf.constant(True)),
+                tf.cond(tf.equal(tf.gather(is_leaf, i), tf.constant(1)),
                         lambda: embed_word(node_word_index, embeddings),
-                        lambda: combine_children(rec(i * 2, is_leaf, node_word_indices, embeddings, W, b),
-                                                 rec(i * 2 + 1, is_leaf, node_word_indices, embeddings, W, b), W, b))
+                        lambda: combine_children(rec(i*2, is_leaf, node_word_indices, embeddings, W, b),
+                                               rec(i*2+1, is_leaf, node_word_indices, embeddings, W, b), W, b))
             return node_tensor
-            # logits = tf.matmul(node_tensor, U) + bs        # 1x35 * 35x35 + 1x35 -> 1x35 projection
-            # return node_tensor
 
         RecImpl.add_to_graph(tf.get_default_graph())
 
-        self.node_tensor = rec(self.cons_placeholder, self.is_leaf_placeholder,
-                               self.node_word_indices_placeholder, embeddings, W1, b1)
 
-        self.writer = tf.summary.FileWriter('./graphs', tf.get_default_graph())
-        self.writer.close()
+        self.node_tensor = rec(self.cons_placeholder, self.is_leaf_placeholder, 
+                            self.node_word_indices_placeholder, self.embeddings, W1, b1)
+
 
         # add projection layer
 
         # self.logits = tf.matmul(self.tensor_array.concat(), U) + bs
-        # self.root_logits = tf.matmul(self.tensor_array.read(self.tensor_array.size() - 1), U) + bs
-        # self.root_logits = tf.matmul(self.node_tensor, U) + bs
-        # self.root_prediction = tf.squeeze(tf.argmax(self.root_logits, 1))
+
+        # 1x35 * 35x35 + 1x35 -> 1x35 projection
+        self.root_logits = tf.matmul(self.node_tensor, U) + bs
+        self.root_prediction = tf.squeeze(tf.argmax(self.root_logits, 1))
 
         # add loss layer
         # regularization_loss = self.config.l2 * (tf.nn.l2_loss(W1) + tf.nn.l2_loss(U))
@@ -132,12 +132,15 @@ class RecursiveNetStaticGraph():
         #     tf.nn.sparse_softmax_cross_entropy_with_logits(
         #         logits=tf.gather(self.logits, included_indices),labels=tf.gather(self.labels_placeholder, included_indices)))
 
-        # self.root_loss = tf.reduce_sum(tf.nn.sparse_softmax_cross_entropy_with_logits(
-        #         logits=self.root_logits,labels=self.labels_placeholder[1]))
-        #
+        self.root_loss = tf.reduce_sum(tf.nn.sparse_softmax_cross_entropy_with_logits(
+                logits=self.root_logits,labels=self.labels_placeholder[1:2]))
+        
         # # add training op
-        # self.train_op = tf.train.GradientDescentOptimizer(self.config.lr).minimize(
-        #     self.full_loss)
+        self.train_op = tf.train.GradientDescentOptimizer(self.config.lr).minimize(self.root_loss)
+
+        # self.writer = tf.summary.FileWriter('./graphs', tf.get_default_graph())
+        # self.writer.close()
+
 
     def build_feed_dict(self, atree):
 
@@ -151,24 +154,25 @@ class RecursiveNetStaticGraph():
 
         tree.traverse(root, assign, (nodes_list, 1))
 
+        labels = [0 if node is None or not node.isLeaf else 1 for node in nodes_list]
         feed_dict = {
             self.cons_placeholder: 1,
 
-            self.is_leaf_placeholder: [node.isLeaf if
-                                       node is not None else False
-                                       for node in nodes_list],
+            # Using int32 instead of bool for by-passing errors occuring during the construction of  the function's gradient
+            self.is_leaf_placeholder: [0 if 
+                                      node is None or not node.isLeaf else 1 
+                                      for node in nodes_list],
 
             self.node_word_indices_placeholder: [self.vocab.encode(node.word) if
                                                  node is not None and node.word else -1
                                                  for node in nodes_list],
 
-            # self.labels_placeholder: [node.label if
-            #                           node is not None else -1
-            #                           for node in nodes_list]
+            self.labels_placeholder: [node.label if
+                                      node is not None else -1
+                                      for node in nodes_list]
 
         }
 
-        print(self.is_leaf_placeholder.dtype)
         return feed_dict
 
     def predict(self, trees, weights_path, get_loss=False):
@@ -190,10 +194,17 @@ class RecursiveNetStaticGraph():
                 results.append(root_prediction)
         return results, losses
 
+    def printTraverse(self, node):
+        if node is None:
+            return
+        print(node.word)
+        self.printTraverse(node.left)
+        self.printTraverse(node.right)
+
     def run_epoch(self, new_model=False, verbose=True):
         loss_history = []
         # training
-        random.shuffle(self.train_data)
+        # random.shuffle(self.train_data)
         with tf.Session() as sess:
             if new_model:
                 sess.run(tf.initialize_all_variables())
@@ -201,25 +212,27 @@ class RecursiveNetStaticGraph():
                 saver = tf.train.Saver()
                 saver.restore(sess, SAVE_DIR + '%s.temp' %
                               self.config.model_name)
-
             for step, tree in enumerate(self.train_data):
-                print(tree, "tree")
+                # print(feed_dict)
                 feed_dict = self.build_feed_dict(tree)
-                print(feed_dict)
-                # sess.run([self.full_loss, self.train_op], feed_dict=feed_dict)
-                loss_value = sess.run(self.node_tensor, feed_dict=feed_dict)
+                loss_value, _ = sess.run([self.root_loss, self.train_op], feed_dict=feed_dict)
+                # print(self.embeddings.eval(session=sess))
                 loss_history.append(loss_value)
+
                 if verbose:
                     sys.stdout.write('\r{} / {} :    loss = {}'.format(step, len(
                         self.train_data), np.mean(loss_history)))
                     sys.stdout.flush()
+
+                print("\n\n\n\n\n\n\n\n")
+                self.printTraverse(tree.root)
+                print("\n\n\n\n\n\n\n\n")
 
                 break
             # saver = tf.train.Saver()
             # if not os.path.exists(SAVE_DIR):
             #   os.makedirs(SAVE_DIR)
             # saver.save(sess, SAVE_DIR + '%s.temp' % self.config.model_name)
-
         # statistics
         # train_preds, _ = self.predict(self.train_data,
         #                               SAVE_DIR + '%s.temp' % self.config.model_name)
