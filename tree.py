@@ -39,6 +39,7 @@ class Tree:
         self.root = self.parse(tokens)
         # get list of labels as obtained through a post-order traversal
         self.labels = get_labels(self.root)
+        # print(self.labels)
         self.num_words = len(self.labels)
 
 
@@ -169,7 +170,7 @@ def simplified_data(num_train, num_dev, num_test):
 
 def binarize_labels(trees):
     def binarize_node(node, _):
-        if node.label<2:
+        if node.label<=2:
             node.label = 0
         elif node.label>2:
             node.label = 1

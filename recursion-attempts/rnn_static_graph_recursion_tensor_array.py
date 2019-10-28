@@ -108,6 +108,9 @@ class RecursiveNetStaticGraph():
         # Function Definition
         @function.Defun(tf.int32, tf.int32, tf.int32, tf.float32, tf.float32, tf.float32, tf.float32, func_name="Rec", grad_func="GradFac", create_grad_func=True, out_names=["ret"])
         def RecImpl(i, is_leaf, node_word_indices, embeddings, W, b, tensor_array):
+
+            arr = tf.TensorArray(tf.float32, 1, dynamic_size=True)
+
             node_word_index = tf.gather(node_word_indices, i)
             node_tensor = \
                 tf.cond(tf.equal(tf.gather(is_leaf, i), tf.constant(1)),
@@ -118,7 +121,7 @@ class RecursiveNetStaticGraph():
             tensor_array = tensor_array.write(i, node_tensor)
             return node_tensor
 
-        tensor_array = tensor_array.write(0, 1)
+        # tensor_array = tensor_array.write(0, 1)
         RecImpl.add_to_graph(tf.get_default_graph())
 
         self.node_tensor = rec(self.cons_placeholder, self.is_leaf_placeholder, 
