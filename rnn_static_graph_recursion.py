@@ -131,11 +131,6 @@ class RecursiveNetStaticGraph():
         self.root_logits = tf.matmul(self.node_tensor, U) + bs
         self.root_prediction = tf.squeeze(tf.argmax(self.root_logits, 1))
       
-        # included_indices = tf.where(tf.less(self.labels_placeholder, 2))
-        # self.full_loss = regularization_loss + tf.reduce_sum(
-        #     tf.nn.sparse_softmax_cross_entropy_with_logits(
-        #         logits=tf.gather(self.logits, included_indices),labels=tf.gather(self.labels_placeholder, included_indices)))
-
         # add loss layer
         regularization_loss = self.config.l2 * (tf.nn.l2_loss(W1) + tf.nn.l2_loss(U))
         self.root_loss = regularization_loss + tf.reduce_sum(tf.nn.sparse_softmax_cross_entropy_with_logits(
@@ -150,7 +145,7 @@ class RecursiveNetStaticGraph():
 
 
     def build_feed_dict(self, atree):
-        size = pow(2, atree.max_depth + 1)  # -1
+        size = pow(2, atree.max_depth + 1)
         nodes_list = [None] * size
         root = atree.root
 
@@ -177,13 +172,6 @@ class RecursiveNetStaticGraph():
         }
         return feed_dict
 
-    def printTraverse(self, node):
-        if node is None:
-            return
-        print(node.word)
-        self.printTraverse(node.left)
-        self.printTraverse(node.right)
-
     def run_epoch(self, sess=None, new_model=False, verbose=True):
         loss_history = []
         # training
@@ -192,9 +180,6 @@ class RecursiveNetStaticGraph():
             sess.run(tf.initialize_all_variables())
 
         for step, tree in enumerate(self.train_data):
-            # print("\n\n\n\n\n\n\n\n")
-            # self.printTraverse(tree.root)
-            # print("\n\n\n\n\n\n\n\n")
             feed_dict = self.build_feed_dict(tree)
             # print(self.embeddings.eval(session=sess))
             loss_value, _ = sess.run([self.full_loss, self.train_op], feed_dict=feed_dict)
@@ -236,7 +221,6 @@ class RecursiveNetStaticGraph():
         print(self.make_conf(val_labels, val_preds))
         
         return train_acc, val_acc, loss_history, np.mean(val_losses)
-        # return None, None, loss_history, None
 
     def train(self, sess=None, verbose=True):
         complete_loss_history = []
@@ -256,7 +240,6 @@ class RecursiveNetStaticGraph():
             complete_loss_history.extend(loss_history)
             train_acc_history.append(train_acc)
             val_acc_history.append(val_acc)
-            # break
             # lr annealing
             epoch_loss = np.mean(loss_history)
             if epoch_loss > prev_epoch_loss * self.config.anneal_threshold:
