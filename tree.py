@@ -84,6 +84,13 @@ class Tree:
         words = [node.word for node in leaves]
         return words
 
+def get_max_tree_height(data):
+    max_height = 0
+    for tree in data:
+        if tree.max_depth > max_height:
+            max_height = tree.max_depth
+    return max_height
+
 
 def leftTraverse(node, nodeFn=None, args=None):
     """
