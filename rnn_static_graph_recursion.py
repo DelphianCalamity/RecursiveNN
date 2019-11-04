@@ -132,12 +132,13 @@ class RecursiveNetStaticGraph():
         self.root_prediction = tf.squeeze(tf.argmax(self.root_logits, 1))
       
         # add loss layer
-        regularization_loss = self.config.l2 * (tf.nn.l2_loss(W1) + tf.nn.l2_loss(U))
-        self.root_loss = regularization_loss + tf.reduce_sum(tf.nn.sparse_softmax_cross_entropy_with_logits(
+        self.root_loss =  tf.reduce_sum(tf.nn.sparse_softmax_cross_entropy_with_logits(
                 logits=self.root_logits, labels=self.labels_placeholder[1:2]))
         
+        regularization_loss = self.config.l2 * (tf.nn.l2_loss(W1) + tf.nn.l2_loss(U))
+        self.full_loss = regularization_loss + tf.reduce_sum(self.full_loss)
+        
         # # add training op
-        self.full_loss = tf.reduce_sum(self.full_loss)
         self.train_op = tf.train.AdamOptimizer(self.config.lr).minimize(self.full_loss)
 
         # self.writer = tf.summary.FileWriter('./graphs', tf.get_default_graph())
