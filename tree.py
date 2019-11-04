@@ -34,6 +34,7 @@ class Tree:
         self.open = '('
         self.close = ')'
         self.max_depth = 0
+        self.num_nodes = 0
         for toks in treeString.strip().split():
             tokens += list(toks)
         self.root = self.parse(tokens)
@@ -63,7 +64,7 @@ class Tree:
 
         # New node
         node = Node(int(tokens[1]))  # zero index labels
-
+        self.num_nodes += 1
         node.parent = parent
 
         # leaf Node
@@ -91,6 +92,12 @@ def get_max_tree_height(data):
             max_height = tree.max_depth
     return max_height
 
+def get_max_tree_nodes(data):
+    max_nodes = 0
+    for tree in data:
+        if tree.num_nodes > max_nodes:
+            max_nodes = tree.num_nodes
+    return max_nodes
 
 def leftTraverse(node, nodeFn=None, args=None):
     """

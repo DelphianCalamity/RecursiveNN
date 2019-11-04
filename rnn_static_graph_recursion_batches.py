@@ -24,10 +24,10 @@ class Config(object):
     early_stopping = 2
     anneal_threshold = 0.99
     anneal_by = 1.5
-    max_epochs = 1  # 30
+    max_epochs = 5  # 30
     lr = 0.01
     l2 = 0.02
-    batch_size = 3
+    batch_size = 5
     max_tree_height = 0
 
     model_name = MODEL_STR % (embed_size, l2, lr)
@@ -42,7 +42,7 @@ class RecursiveNetStaticGraph():
         self.train_data, self.dev_data, self.test_data = tree.simplified_data(700,
                                                                               100,
                                                                               200)
-        max_height = tree.get_max_tree_height(self.train_data)
+        max_height = tree.get_max_tree_height(self.train_data + self.dev_data + self.test_data)
         self.config.max_tree_height = pow(2, max_height + 1)
         
         print(self.config.max_tree_height)
@@ -70,19 +70,16 @@ class RecursiveNetStaticGraph():
             self.embeddings = tf.get_variable('embeddings',
                                          [len(self.vocab),
                                          self.config.embed_size])
-
         with tf.variable_scope('Composition'):
             self.W1 = tf.get_variable('W1',
                                  [2 * self.config.embed_size,
                                      self.config.embed_size])
             self.b1 = tf.get_variable('b1', [1, self.config.embed_size]) 
-
         with tf.variable_scope('Projection'):
             self.U = tf.get_variable('U',
                                 [self.config.embed_size,
                                  self.config.label_size])
             self.bs = tf.get_variable('bs', [1, self.config.label_size])
-
 
         # Build recursive graph
         def embed_word(word_index, embeddings):
@@ -131,19 +128,21 @@ class RecursiveNetStaticGraph():
 
         RecImpl.add_to_graph(tf.get_default_graph())
 
-
-        outloss=[]
-        prediction=[]
+        outloss = []
+        prediction = []
+        root_loss = []
 
         for idx_batch in range(self.config.batch_size):
 
-            self.root_prediction, self.full_loss = self.compute_tree(idx_batch)
+            self.root_prediction, self.full_loss, self.root_loss = self.compute_tree(idx_batch)
 
             prediction.append(self.root_prediction)
             outloss.append(self.full_loss)
+            root_loss.append(self.root_loss)
 
         batch_loss = tf.stack(outloss)
-        pred = tf.stack(prediction)
+        self.pred = tf.stack(prediction)
+        self.rloss = tf.stack(root_loss)
 
         # Compute batch loss
         # reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
@@ -159,38 +158,31 @@ class RecursiveNetStaticGraph():
 
     def compute_tree(self, idx_batch):
 
-        with tf.variable_scope("Composition", reuse=True):
 
-            # Gather is_leaf_placeholder_x
-            is_leaf_placeholder_x = tf.gather(self.is_leaf_placeholder, idx_batch)
-            # Gather node_word_indices_placeholder_x
-            node_word_indices_placeholder_x = tf.gather(self.node_word_indices_placeholder, idx_batch)
-            # Gather is_labels_placeholder_x
-            labels_placeholder_x = tf.gather(self.labels_placeholder, idx_batch)
+        is_leaf_placeholder_x = tf.gather(self.is_leaf_placeholder, idx_batch)
+        node_word_indices_placeholder_x = tf.gather(self.node_word_indices_placeholder, idx_batch)
+        labels_placeholder_x = tf.gather(self.labels_placeholder, idx_batch)
 
 
-            node_tensor, full_loss = self.rec(self.cons_placeholder, is_leaf_placeholder_x, 
-                                node_word_indices_placeholder_x, self.embeddings, 
-                                self.W1, self.b1, labels_placeholder_x, self.U, self.bs)
+        node_tensor, full_loss = self.rec(self.cons_placeholder, is_leaf_placeholder_x, 
+                            node_word_indices_placeholder_x, self.embeddings, 
+                            self.W1, self.b1, labels_placeholder_x, self.U, self.bs)
 
-           # add projection layer
-            root_logits = tf.matmul(node_tensor, self.U) + self.bs
-            root_prediction = tf.squeeze(tf.argmax(root_logits, 1))
-          
-            # add loss layer
-            root_loss = tf.reduce_sum(tf.nn.sparse_softmax_cross_entropy_with_logits(
-                    logits=root_logits, labels=labels_placeholder_x[1:2]))
-            regularization_loss = self.config.l2 * (tf.nn.l2_loss(self.W1) + tf.nn.l2_loss(self.U))
-            full_loss = regularization_loss + tf.reduce_sum(full_loss)
+       # add projection layer
+        root_logits = tf.matmul(node_tensor, self.U) + self.bs
+        root_prediction = tf.squeeze(tf.argmax(root_logits, 1))
+      
+        # add loss layer
+        root_loss = tf.reduce_sum(tf.nn.sparse_softmax_cross_entropy_with_logits(
+                logits=root_logits, labels=labels_placeholder_x[1:2]))
+        regularization_loss = self.config.l2 * (tf.nn.l2_loss(self.W1) + tf.nn.l2_loss(self.U))
+        full_loss = regularization_loss + tf.reduce_sum(full_loss)
 
-        return root_prediction, full_loss
+        return root_prediction, full_loss, root_loss
 
 
     def build_feed_dict(self, batch_data):
 
-        # size = pow(2, atree.max_depth + 1)
-        # size = pow(2, self.config.max_tree_height + 1)
- 
         def assign(node, args):
             args[0][args[1]] = node
  
@@ -227,8 +219,7 @@ class RecursiveNetStaticGraph():
             sess.run(tf.initialize_all_variables())
 
         data_idxs = list(range(len(self.train_data)))
-        # shuffle(data_idxs)
-        # step=0
+        step=0
         for i in range(0, len(self.train_data), self.config.batch_size):
             # 0, 5, 10, 15, .. len(data)
             batch_size = min(i+self.config.batch_size, len(self.train_data))-i
@@ -242,44 +233,51 @@ class RecursiveNetStaticGraph():
             loss_value, _ = sess.run([self.total_loss, self.train_op], feed_dict=feed_dict)
             loss_history.append(loss_value)
            
-            # step = step+1
-            # if verbose:
-            #     sys.stdout.write('\r{} / {} :    loss = {}'.format(step, len(
-            #         self.train_data), np.mean(loss_history)))
-            #     sys.stdout.flush()
+            step = step+1
+            if verbose:
+                sys.stdout.write('\r{} / {} :    loss = {}'.format(step, len(
+                    self.train_data), np.mean(loss_history)))
+                sys.stdout.flush()
                 
 
         # statistics
         # Root Prediction
-        # train_preds = []
+        train_preds = []
+        for i in range(0, len(self.train_data), self.config.batch_size):
+            batch_size = min(i+self.config.batch_size, len(self.train_data))-i
+            if batch_size < self.config.batch_size: break
+            batch_idxs = data_idxs[i:i+self.config.batch_size]
+            batch_data = [self.train_data[ix] for ix in batch_idxs]
+            feed_dict = self.build_feed_dict(batch_data)
+            root_prediction = sess.run(self.pred, feed_dict=feed_dict)
+            train_preds += root_prediction.tolist()
 
-        # for tree in self.train_data:
-        #     feed_dict = self.build_feed_dict(tree)
-        #     root_prediction = sess.run(
-        #                 self.root_prediction, feed_dict=feed_dict)
-        #     train_preds.append(root_prediction)
+        val_preds = []
+        val_losses = []
+        data_idxs = list(range(len(self.dev_data)))
+        for i in range(0, len(self.dev_data), self.config.batch_size):
+            batch_size = min(i+self.config.batch_size, len(self.dev_data))-i
+            if batch_size < self.config.batch_size: break
+            batch_idxs = data_idxs[i:i+self.config.batch_size]
+            batch_data = [self.dev_data[ix] for ix in batch_idxs]
+            feed_dict = self.build_feed_dict(batch_data)
 
-        # val_preds = []
-        # val_losses = []
-        # for tree in self.dev_data:
-        #     feed_dict = self.build_feed_dict(tree)
-        #     root_prediction, loss = sess.run(
-        #             [self.root_prediction, self.root_loss], feed_dict=feed_dict)
-        #     val_losses.append(loss)
-        #     val_preds.append(root_prediction)
+            root_prediction, loss = sess.run([self.pred, self.rloss], feed_dict=feed_dict)
+            val_losses += loss.tolist()
+            val_preds += root_prediction.tolist()
 
-        # train_labels = [t.root.label for t in self.train_data]
-        # val_labels = [t.root.label for t in self.dev_data]
-        # train_acc = np.equal(train_preds, train_labels).mean()
-        # val_acc = np.equal(val_preds, val_labels).mean()
+        train_labels = [t.root.label for t in self.train_data[0: (len(self.train_data)//self.config.batch_size)*self.config.batch_size]]
+        val_labels = [t.root.label for t in self.dev_data[0: (len(self.dev_data)//self.config.batch_size)*self.config.batch_size]]
+        train_acc = np.equal(train_preds, train_labels).mean()
+        val_acc = np.equal(val_preds, val_labels).mean()
         
-        # print('\nTraining acc (only root node): {}'.format(train_acc))
-        # print('Valiation acc (only root node): {}'.format(val_acc))
-        # print(self.make_conf(train_labels, train_preds))
-        # print(self.make_conf(val_labels, val_preds))
+        print('\nTraining acc (only root node): {}'.format(train_acc))
+        print('Valiation acc (only root node): {}'.format(val_acc))
+        print(self.make_conf(train_labels, train_preds))
+        print(self.make_conf(val_labels, val_preds))
         
-        # return train_acc, val_acc, loss_history, np.mean(val_losses)
-        return None, None, loss_history, None
+        return train_acc, val_acc, loss_history, np.mean(val_losses)
+        # return None, None, loss_history, None
 
     def train(self, sess=None, verbose=True):
         complete_loss_history = []
@@ -296,23 +294,23 @@ class RecursiveNetStaticGraph():
                     new_model=True)
             else:
                 train_acc, val_acc, loss_history, val_loss = self.run_epoch(sess=sess)
-            # complete_loss_history.extend(loss_history)
-            # train_acc_history.append(train_acc)
-            # val_acc_history.append(val_acc)
-            # # lr annealing
-            # epoch_loss = np.mean(loss_history)
-            # if epoch_loss > prev_epoch_loss * self.config.anneal_threshold:
-            #     self.config.lr /= self.config.anneal_by
-            #     print('annealed lr to %f' % self.config.lr)
-            # prev_epoch_loss = epoch_loss
+            complete_loss_history.extend(loss_history)
+            train_acc_history.append(train_acc)
+            val_acc_history.append(val_acc)
+            # lr annealing
+            epoch_loss = np.mean(loss_history)
+            if epoch_loss > prev_epoch_loss * self.config.anneal_threshold:
+                self.config.lr /= self.config.anneal_by
+                print('annealed lr to %f' % self.config.lr)
+            prev_epoch_loss = epoch_loss
 
-            # if val_loss < best_val_loss:
-            #     best_val_loss = val_loss
-            #     best_val_epoch = epoch
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_val_epoch = epoch
 
-            # # if model has not improved for a while stop
-            # if epoch - best_val_epoch > self.config.early_stopping:
-            #     stopped = epoch
+            # if model has not improved for a while stop
+            if epoch - best_val_epoch > self.config.early_stopping:
+                stopped = epoch
 
         if verbose:
           sys.stdout.write('\r')
@@ -357,14 +355,19 @@ class RecursiveNetStaticGraph():
 
         val_preds = []
         val_losses = []
-        for tree in self.dev_data:
-            feed_dict = self.build_feed_dict(tree)
-            root_prediction, loss = sess.run(
-                    [self.root_prediction, self.root_loss], feed_dict=feed_dict)
-            val_losses.append(loss)
-            val_preds.append(root_prediction)
 
-        val_labels = [t.root.label for t in self.dev_data]
+        data_idxs = list(range(len(self.dev_data)))
+        for i in range(0, len(self.dev_data), self.config.batch_size):
+            batch_size = min(i+self.config.batch_size, len(self.dev_data))-i
+            if batch_size < self.config.batch_size: break
+            batch_idxs = data_idxs[i:i+self.config.batch_size]
+            batch_data = [self.dev_data[ix] for ix in batch_idxs]
+            feed_dict = self.build_feed_dict(batch_data)
+            root_prediction, loss = sess.run([self.pred, self.rloss], feed_dict=feed_dict)
+            val_losses += loss.tolist()
+            val_preds += root_prediction.tolist()
+
+        val_labels = [t.root.label for t in self.dev_data[0: (len(self.dev_data)//self.config.batch_size)*self.config.batch_size]]
         val_acc = np.equal(val_preds, val_labels).mean()
         print(val_acc)
         
@@ -372,13 +375,18 @@ class RecursiveNetStaticGraph():
         print('Test')
 
         predictions = []
-        for tree in self.test_data:
-            feed_dict = self.build_feed_dict(tree)
-            root_prediction = sess.run(
-                        self.root_prediction, feed_dict=feed_dict)
-            predictions.append(root_prediction)
 
-        labels = [t.root.label for t in self.test_data]
+        data_idxs = list(range(len(self.test_data)))
+        for i in range(0, len(self.test_data), self.config.batch_size):
+            batch_size = min(i+self.config.batch_size, len(self.test_data))-i
+            if batch_size < self.config.batch_size: break
+            batch_idxs = data_idxs[i:i+self.config.batch_size]
+            batch_data = [self.test_data[ix] for ix in batch_idxs]
+            feed_dict = self.build_feed_dict(batch_data)
+            root_prediction = sess.run(self.pred, feed_dict=feed_dict)
+            predictions += root_prediction.tolist()
+
+        labels = [t.root.label for t in self.test_data[0: (len(self.test_data)//self.config.batch_size)*self.config.batch_size]]
         print(self.make_conf(labels, predictions))
         test_acc = np.equal(predictions, labels).mean()
         print('Test acc: {}'.format(test_acc))
@@ -402,5 +410,5 @@ if __name__ == '__main__':
 
     config = Config()
     model = RecursiveNetStaticGraph(config)
-    # model.test_RNN(config)
-    model.train_RNN(config)
+    model.test_RNN(config)
+    # model.train_RNN(config)
